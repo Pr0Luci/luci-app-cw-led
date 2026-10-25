@@ -1,0 +1,28 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          set -eu
+          for f in $(grep -rlE "^#!/bin/sh" luci-app-cw-led/root) luci-app-cw-led/root/usr/lib/cw-led/*.sh; do
+            sh -n "$f"
+          done
+      - name: JavaScript syntax
+        run: node --check luci-app-cw-led/htdocs/luci-static/resources/view/cw-led/settings.js
+      - name: JSON files
+        run: |
+          for f in $(find luci-app-cw-led/root -name "*.json"); do jq empty "$f"; done
