@@ -1,0 +1,104 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Pr0Luci
+# rpcd exec plugin, ubus object "luci.cw-led".
+# Read-only: changes go through UCI, then procd reloads the daemon.
+
+. /usr/share/libubox/jshn.sh
+. /usr/lib/cw-led/functions.sh
+
+status_json() {
+	local running=0 nen na=0 d n trig b
+
+	json_init
+
+	pgrep -f /usr/sbin/cw-led-daemon >/dev/null 2>&1 && running=1
+	json_add_boolean daemon_running "$running"
+
+	nen=$(uci -q get cw-led.night.enabled)
+	if [ "$nen" = "1" ] && cw_led_in_window \
+		"$(uci -q get cw-led.night.start)" "$(uci -q get cw-led.night.end)"; then
+		na=1
+	fi
+	json_add_boolean night_active "$na"
+
+	json_add_string color_5g "$(cw_led_tricolor_color 5g)"
+	json_add_string color_signal "$(cw_led_tricolor_color signal)"
+
+	json_add_object leds
+	for d in /sys/class/leds/*; do
+		[ -d "$d" ] || continue
+		n="${d##*/}"
+		trig=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$d/trigger" 2>/dev/null)
+		b=$(cat "$d/brightness" 2>/dev/null)
+		case "$b" in '' | *[!0-9]*) b=0 ;; esac
+		json_add_object "$n"
+		json_add_string trigger "${trig:-unknown}"
+		json_add_int brightness "$b"
+		json_close_object
+	done
+	json_close_object
+
+	json_dump
+}
+
+# Choices for the dropdowns in the LuCI page.
+options_json() {
+	local f n ifc
+
+	json_init
+
+	json_add_array serial_ports
+	for f in /dev/ttyUSB* /dev/ttyACM*; do
+		[ -c "$f" ] && json_add_string "" "$f"
+	done
+	json_close_array
+
+	json_add_array wifi_ifaces
+	for f in /sys/class/net/*/phy80211; do
+		[ -e "$f" ] || continue
+		ifc=$(basename "$(dirname "$f")")
+		json_add_string "" "$ifc"
+	done
+	json_close_array
+
+	# Bridges such as br-lan: in netdev mode a bridge blinks for all its member
+	# ports, so one bridge covers both Wi-Fi radios.
+	json_add_array bridges
+	for f in /sys/class/net/*/bridge; do
+		[ -d "$f" ] || continue
+		json_add_string "" "$(basename "$(dirname "$f")")"
+	done
+	json_close_array
+
+	json_add_array net_interfaces
+	for n in $(ubus call network.interface dump 2>/dev/null |
+		jsonfilter -e '@.interface[*].interface' 2>/dev/null); do
+		[ "$n" = "loopback" ] && continue
+		json_add_string "" "$n"
+	done
+	json_close_array
+
+	json_dump
+}
+
+case "$1" in
+list)
+	echo '{ "status": {}, "options": {} }'
+	;;
+call)
+	case "$2" in
+	status)
+		read -r _args 2>/dev/null   # drain the ubus args from stdin
+		status_json
+		;;
+	options)
+		read -r _args 2>/dev/null   # drain the ubus args from stdin
+		options_json
+		;;
+	*)
+		exit 1
+		;;
+	esac
+	;;
+esac

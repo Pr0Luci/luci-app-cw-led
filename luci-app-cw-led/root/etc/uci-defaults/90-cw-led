@@ -1,0 +1,46 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Pr0Luci
+# First-boot/install setup. Safe to run more than once.
+#
+# The stock /etc/config/system has `config led` blocks for sysfs nodes the
+# daemon drives itself (tri-color 5g/signal, internet). If they stay,
+# `service led restart` re-applies kernel triggers that fight the daemon, so
+# remove exactly those blocks. green:phone is not listed, it is not ours.
+# The kernel-trigger blocks (power, wifi, wan PHY) are kept; the daemon
+# re-applies the same triggers at START=50.
+
+OWNED_NODES="blue:5g green:5g red:5g blue:signal green:signal red:signal green:internet"
+
+remove_owned_led_blocks() {
+	local idx sysfs changed=0
+	# walk backwards so deleting does not shift the indexes still to visit
+	idx=$(($(uci -q show system | grep -c '=led$') - 1))
+	while [ "$idx" -ge 0 ]; do
+		sysfs=$(uci -q get "system.@led[$idx].sysfs")
+		case " $OWNED_NODES " in
+		*" $sysfs "*)
+			uci -q delete "system.@led[$idx]"
+			changed=1
+			;;
+		esac
+		idx=$((idx - 1))
+	done
+	[ "$changed" -eq 1 ] && uci commit system
+}
+
+remove_owned_led_blocks
+
+# The conffile ships full defaults; only reseed if a broken one is left over.
+if ! uci -q get cw-led.global >/dev/null; then
+	uci -q batch <<-EOF
+		set cw-led.global=cw-led
+		set cw-led.global.enabled=1
+		commit cw-led
+	EOF
+fi
+
+/etc/init.d/cw-led enable 2>/dev/null
+/etc/init.d/rpcd reload 2>/dev/null
+
+exit 0

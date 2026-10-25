@@ -1,0 +1,753 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Pr0Luci
+# cw-led-daemon - AW1000 physical LED status daemon
+#
+#   cw-led-daemon            run the poll loop (procd-managed)
+#   cw-led-daemon restore    re-apply the static triggers, turn the
+#                            daemon-owned LEDs off, exit
+#
+# All LEDs on this board are binary (max_brightness=1).
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /usr/lib/cw-led/functions.sh
+. /usr/lib/cw-led/modem.sh
+
+CACHE_KEYS=""
+NIGHT_STATE=off
+TICK_NO=0
+LAST_MODEM=0
+FORCE_MODEM_POLL=0
+RESOLVED_WAN=""
+RESOLVED_L3=""
+INTERNET_IFN=""
+MODEM_FAILS=0
+MODEM_WARNED=0
+GARBLE_COUNT=0
+GRACE_TICKS=0
+SIG_GRACE_TICKS=0
+COLOR_5G=off
+COLOR_SIGNAL=off
+
+# Previous LED states. State changes are logged only when they change, so a
+# modem or port fault leaves a trail in logread without flooding it.
+PREV_5G=init
+PREV_SIGNAL=init
+PREV_INTERNET=init
+LAST_HEARTBEAT=0
+
+# http204 mode: the latched LED state and the counters behind it. INTERNET_UP
+# stays as it is between probes. PROBE_PENDING forces a probe on the first tick
+# after the uplink comes up, so the LED turns on quickly.
+INTERNET_UP=0
+PROBE_OK=0
+PROBE_FAIL=0
+PROBE_PENDING=1
+
+# Blink rate for the kernel-timer states (3G green flash, SIM-fail and
+# connecting red flash): 500 ms on, 500 ms off, 1 Hz.
+CW_FLASH_ON=500
+CW_FLASH_OFF=500
+
+load_config() {
+	config_load cw-led
+	config_get global_poll_interval global poll_interval 30
+	config_get global_tick global tick 5
+	config_get log_heartbeat_min global log_heartbeat_min 0
+	config_get modem_port modem port /dev/ttyUSB3
+	config_get modem_timeout modem timeout 3
+	config_get modem_fail_threshold modem fail_threshold 3
+	config_get grace_max_ticks modem grace_max_ticks 2
+	config_get_bool night_enabled night enabled 0
+	config_get night_start night start 22:30
+	config_get night_end night end 06:00
+	config_get night_exempt night exempt ""
+	config_get wifi_mode wifi mode auto
+	config_get wifi_device wifi device ""
+	config_get signal_rsrp_excellent signal rsrp_excellent -95
+	config_get signal_rsrp_poor signal rsrp_poor -110
+	config_get signal_csq_excellent signal csq_excellent 20
+	config_get signal_csq_poor signal csq_poor 9
+	config_get internet_mode internet mode http204
+	config_get internet_iface internet iface auto
+	config_get internet_ping_host internet ping_host 1.1.1.1
+	config_get internet_ping_every internet ping_every 6
+	config_get internet_probe_url internet probe_url http://cp.cloudflare.com/generate_204
+	config_get internet_probe_url_fb internet probe_url_fallback http://connectivitycheck.gstatic.com/generate_204
+	config_get internet_probe_every internet probe_every 6
+	config_get internet_probe_timeout internet probe_timeout 3
+	config_get_bool internet_probe_ipv6 internet probe_ipv6 0
+	config_get internet_probe_up_ok internet probe_up_ok 1
+	config_get internet_probe_down_fail internet probe_down_fail 2
+
+	case "$global_tick" in '' | *[!0-9]*) global_tick=5 ;; esac
+	case "$log_heartbeat_min" in '' | *[!0-9]*) log_heartbeat_min=0 ;; esac
+	case "$grace_max_ticks" in '' | *[!0-9]*) grace_max_ticks=2 ;; esac
+	[ "$global_tick" -ge 1 ] || global_tick=5
+	case "$global_poll_interval" in '' | *[!0-9]*) global_poll_interval=30 ;; esac
+	case "$modem_timeout" in '' | *[!0-9]* | 0) modem_timeout=3 ;; esac
+	case "$modem_fail_threshold" in '' | *[!0-9]* | 0) modem_fail_threshold=3 ;; esac
+	case "$internet_ping_every" in '' | *[!0-9]* | 0) internet_ping_every=6 ;; esac
+	case "$internet_probe_every" in '' | *[!0-9]* | 0) internet_probe_every=6 ;; esac
+	case "$internet_probe_timeout" in '' | *[!0-9]* | 0) internet_probe_timeout=3 ;; esac
+	case "$internet_probe_up_ok" in '' | *[!0-9]* | 0) internet_probe_up_ok=1 ;; esac
+	case "$internet_probe_down_fail" in '' | *[!0-9]* | 0) internet_probe_down_fail=2 ;; esac
+	# busybox ping would take a host starting with '-' as an option
+	cw_valid_host "$internet_ping_host" || internet_ping_host=1.1.1.1
+	# the probe URL must be http/https; the fallback may be empty
+	case "$internet_probe_url" in http://* | https://*) ;; *) internet_probe_url=http://cp.cloudflare.com/generate_204 ;; esac
+	case "$internet_probe_url_fb" in '' | http://* | https://*) ;; *) internet_probe_url_fb=http://connectivitycheck.gstatic.com/generate_204 ;; esac
+	case "$signal_rsrp_excellent" in '-'[0-9]*) ;; *) signal_rsrp_excellent=-95 ;; esac
+	case "$signal_rsrp_poor" in '-'[0-9]*) ;; *) signal_rsrp_poor=-110 ;; esac
+	case "$signal_csq_excellent" in '' | *[!0-9]*) signal_csq_excellent=20 ;; esac
+	case "$signal_csq_poor" in '' | *[!0-9]*) signal_csq_poor=9 ;; esac
+
+	# "excellent" must be the larger value; swapped thresholds would give wrong
+	# colours without any sign of why
+	if [ "$signal_rsrp_excellent" -le "$signal_rsrp_poor" ]; then
+		logger -t cw-led "warning: signal RSRP thresholds inverted, using defaults"
+		signal_rsrp_excellent=-95
+		signal_rsrp_poor=-110
+	fi
+	if [ "$signal_csq_excellent" -le "$signal_csq_poor" ]; then
+		logger -t cw-led "warning: signal CSQ thresholds inverted, using defaults"
+		signal_csq_excellent=20
+		signal_csq_poor=9
+	fi
+
+	CW_AT_PORT=$modem_port
+	CW_AT_TIMEOUT=$modem_timeout
+}
+
+# --- sysfs writes (a write that would change nothing is skipped) ---------------
+# CW_LED_SYSFS overrides the sysfs root (for tests).
+
+led_set() { # node attr value
+	local base="${CW_LED_SYSFS:-/sys/class/leds}/$1" key= cur dep dkey live=
+	[ -e "$base/$2" ] || return 0
+	# brightness and trigger are compared with the live sysfs value, not the
+	# cache. Something else (/etc/init.d/led replaying an old /var/run/led.state
+	# at S96) can change one of our nodes behind our back, and a cache that
+	# still says "green" would then skip the repaint forever. Reading sysfs
+	# forks nothing, so the no-op case costs nothing on every tick.
+	# Other attributes (delay_on/off) use the cache.
+	case "$2" in
+	brightness)
+		read -r live < "$base/brightness" 2>/dev/null
+		[ "$live" = "$3" ] && return 0
+		;;
+	trigger)
+		read -r live < "$base/trigger" 2>/dev/null
+		case "$live" in *"[$3]"*) return 0 ;; esac
+		;;
+	*)
+		key=$(printf '%s_%s' "$1" "$2" | tr -c 'A-Za-z0-9' '_')
+		eval "cur=\${C_$key:-}"
+		[ "$cur" = "$3" ] && return 0
+		;;
+	esac
+	[ -n "$key" ] || key=$(printf '%s_%s' "$1" "$2" | tr -c 'A-Za-z0-9' '_')
+	if printf '%s' "$3" > "$base/$2" 2>/dev/null; then
+		eval "C_$key=\$3"
+		case " $CACHE_KEYS " in
+		*" $key "*) ;;
+		*) CACHE_KEYS="$CACHE_KEYS $key" ;;
+		esac
+		# Changing the trigger has side effects on the same LED: switching to
+		# 'none' runs the old trigger's deactivate (timer turns the LED off) and
+		# activating 'timer' resets delay_on/off. Drop the cached values that
+		# depend on it so a later brightness or delay write is not skipped.
+		if [ "$2" = trigger ]; then
+			for dep in brightness delay_on delay_off; do
+				dkey=$(printf '%s_%s' "$1" "$dep" | tr -c 'A-Za-z0-9' '_')
+				unset "C_$dkey"
+			done
+		fi
+	fi
+	return 0
+}
+
+clear_cache() {
+	local k
+	for k in $CACHE_KEYS; do
+		unset "C_$k"
+	done
+	CACHE_KEYS=""
+}
+
+# Set a three-LED group ($1 = 5g|signal) to a state ($2):
+#   off | blue | green | red    one member solid (or none), kernel trigger off
+#   green_flash | red_flash     one member blinks via the kernel 'timer' trigger
+# Solid and off members get 'trigger none' first, which clears a leftover timer.
+# The blinking member keeps delay_on/off and its brightness is left to the kernel.
+set_tricolor() { # group(5g|signal) state
+	local c fc="" solid=""
+	case "$2" in
+	blue | green | red) solid="$2" ;;
+	green_flash) fc="green" ;;
+	red_flash) fc="red" ;;
+	esac
+	for c in blue green red; do
+		if [ -n "$fc" ] && [ "$c" = "$fc" ]; then
+			led_set "$c:$1" trigger timer
+			led_set "$c:$1" delay_on "$CW_FLASH_ON"
+			led_set "$c:$1" delay_off "$CW_FLASH_OFF"
+		else
+			led_set "$c:$1" trigger none
+			if [ "$c" = "$solid" ]; then
+				led_set "$c:$1" brightness 1
+			else
+				led_set "$c:$1" brightness 0
+			fi
+		fi
+	done
+}
+
+node_for() { # name -> sysfs node (the tri-color groups are handled separately)
+	case "$1" in
+	power) echo "green:power" ;;
+	wifi) echo "green:wifi" ;;
+	internet) echo "green:internet" ;;
+	esac
+}
+
+warn_missing_nodes() { # once at startup
+	local n missing=""
+	for n in green:power green:wifi green:internet \
+		blue:5g green:5g red:5g blue:signal green:signal red:signal; do
+		[ -e "/sys/class/leds/$n" ] || missing="$missing $n"
+	done
+	[ -n "$missing" ] && logger -t cw-led "warning: missing LED node(s):$missing"
+}
+
+apply_static_triggers() {
+	local c g wdev
+	led_set "green:power" trigger default-on
+
+	# The ethernet WAN port LED is a PHY/jack LED and is not touched here; the
+	# stock system.led_wan_port_link (netdev trigger) drives it.
+
+	# ath11k ignores the mac80211 phyXradio LED triggers, so 'auto' mode is
+	# driven by the daemon (see wifi_update). 'netdev' mode uses the kernel
+	# netdev trigger on one interface and blinks with real traffic.
+	if [ "$wifi_mode" = "netdev" ]; then
+		wdev="$wifi_device"
+		[ -n "$wdev" ] || wdev=$(cw_wifi_first_iface)
+		if [ -n "$wdev" ]; then
+			led_set "green:wifi" trigger netdev
+			led_set "green:wifi" device_name "$wdev"
+			led_set "green:wifi" link 1
+			led_set "green:wifi" tx 1
+			led_set "green:wifi" rx 1
+		else
+			led_set "green:wifi" trigger none
+			led_set "green:wifi" brightness 0
+		fi
+	else
+		# auto mode: the daemon sets brightness
+		led_set "green:wifi" trigger none
+	fi
+
+	# daemon-owned nodes: no kernel trigger, brightness is ours
+	for g in 5g signal; do
+		for c in blue green red; do
+			led_set "$c:$g" trigger none
+		done
+	done
+	led_set "green:internet" trigger none
+
+	# green:phone is not ours. This daemon never reads, writes or parks it, and
+	# leaves its led.state entry alone.
+}
+
+# --- night mode ------------------------------------------------------------------
+
+is_exempt() {
+	case " $night_exempt " in
+	*" $1 "*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+concept_active() { # true unless night mode has switched it off
+	[ "$NIGHT_STATE" != "on" ] || is_exempt "$1"
+}
+
+concept_off() {
+	local c n
+	case "$1" in
+	fiveg)
+		for c in blue green red; do
+			led_set "$c:5g" trigger none
+			led_set "$c:5g" brightness 0
+		done
+		;;
+	signal)
+		for c in blue green red; do
+			led_set "$c:signal" trigger none
+			led_set "$c:signal" brightness 0
+		done
+		;;
+	*)
+		n=$(node_for "$1")
+		if [ -n "$n" ]; then
+			led_set "$n" trigger none
+			led_set "$n" brightness 0
+		fi
+		;;
+	esac
+}
+
+night_update() {
+	local active=0 concept
+	if [ "$night_enabled" = 1 ] && cw_led_in_window "$night_start" "$night_end"; then
+		active=1
+	fi
+	if [ "$active" = 1 ] && [ "$NIGHT_STATE" != "on" ]; then
+		for concept in power wifi fiveg signal internet; do
+			is_exempt "$concept" && continue
+			concept_off "$concept"
+		done
+		NIGHT_STATE=on
+		logger -t cw-led "night mode ON ($night_start-$night_end)"
+	elif [ "$active" = 0 ] && [ "$NIGHT_STATE" = "on" ]; then
+		clear_cache
+		apply_static_triggers
+		FORCE_MODEM_POLL=1
+		PROBE_PENDING=1   # http204: probe again right away, a green that went
+		                  # stale overnight gets corrected
+		NIGHT_STATE=off
+		logger -t cw-led "night mode OFF"
+	fi
+}
+
+# --- modem-driven tri-colors -------------------------------------------------------
+
+compute_colors() {
+	# 5G LED: shows 5G only and has no red. SA = blue, NSA = green, anything
+	# else (4G, 3G, no service, unknown) = off.
+	case "$M_RAT" in
+	sa) COLOR_5G=blue ;;
+	nsa) COLOR_5G=green ;;
+	*) COLOR_5G=off ;;
+	esac
+	# Signal LED. Registered: green = good, blue = average, red = poor (by RSRP,
+	# with CSQ as the fallback). Not registered: red flash when the SIM failed
+	# or the modem is connecting (CEREG stat 2 searching, 3 denied), otherwise
+	# off (radio off or no coverage).
+	if [ "$M_REG" = 1 ]; then
+		if [ -n "$M_RSRP" ]; then
+			if [ "$M_RSRP" -ge "$signal_rsrp_excellent" ]; then
+				COLOR_SIGNAL=green
+			elif [ "$M_RSRP" -le "$signal_rsrp_poor" ]; then
+				COLOR_SIGNAL=red
+			else
+				COLOR_SIGNAL=blue
+			fi
+		elif [ -n "$M_CSQ" ]; then
+			if [ "$M_CSQ" -ge "$signal_csq_excellent" ]; then
+				COLOR_SIGNAL=green
+			elif [ "$M_CSQ" -le "$signal_csq_poor" ]; then
+				COLOR_SIGNAL=red
+			else
+				COLOR_SIGNAL=blue
+			fi
+		else
+			COLOR_SIGNAL=off
+		fi
+	elif [ "$M_SIM" = fail ]; then
+		COLOR_SIGNAL=red_flash
+	elif [ "$M_REGSTAT" = 2 ] || [ "$M_REGSTAT" = 3 ]; then
+		COLOR_SIGNAL=red_flash
+	else
+		COLOR_SIGNAL=off
+	fi
+}
+
+# True when the modem is provably in service on this poll: registered
+# (CEREG stat 1/5, M_REG=1), or a default route over the wwan device exists
+# (the QMI data path is up). A bare CSQ does not count: a valid CSQ while not
+# registered means connecting or searching, which should keep its red flash
+# and not be held.
+cw_modem_serving() {
+	[ "$M_REG" = 1 ] && return 0
+	ip route show default 2>/dev/null | grep -q 'dev wwan'
+}
+
+modem_wanted() {
+	concept_active fiveg || concept_active signal
+}
+
+# The modem is polled every poll_interval, but the 5G and signal groups are set
+# from the last computed colours on every tick, like the other LEDs. led_set
+# compares with the live sysfs value, so a correct LED costs no write, and a
+# foreign write (the S96 led.state replay) is repaired within a tick instead of
+# at the next poll.
+modem_update() {
+	local now
+	modem_wanted || return 0
+	now=$(date +%s)
+	if [ "$FORCE_MODEM_POLL" = 1 ] || [ $((now - LAST_MODEM)) -ge "$global_poll_interval" ]; then
+		FORCE_MODEM_POLL=0
+		LAST_MODEM=$now
+		modem_refresh
+	fi
+	if concept_active fiveg; then
+		set_tricolor 5g "$COLOR_5G"
+	fi
+	if concept_active signal; then
+		set_tricolor signal "$COLOR_SIGNAL"
+	fi
+}
+
+# One modem poll -> COLOR_5G / COLOR_SIGNAL, with the grace handling, the
+# failure threshold and the logging.
+modem_refresh() {
+	local contended=0
+	if cw_modem_poll; then
+		# log the recovery of a short fault too: a blip below the threshold
+		# never turns the LEDs off, so without this only its start is logged
+		if [ "$MODEM_FAILS" -gt 0 ]; then
+			logger -t cw-led "state: modem poll recovered on $CW_AT_PORT after $MODEM_FAILS failed poll(s)"
+		fi
+		MODEM_FAILS=0
+		MODEM_WARNED=0
+		# The port answered but had no usable +QENG/+CSQ line. That is what
+		# another reader on the port looks like. Count it and log now and then;
+		# the LEDs go off, they never show a made-up colour.
+		if [ -z "$M_RAT" ] && [ -z "$M_CSQ" ]; then
+			GARBLE_COUNT=$((GARBLE_COUNT + 1))
+			[ $((GARBLE_COUNT % 20)) -eq 1 ] && logger -t cw-led \
+				"warning: AT poll answered but unparseable ($GARBLE_COUNT) - possible AT-port contention"
+		fi
+		# Contention grace. If another reader (asterisk, chan_quectel) cuts the
+		# QENG reply short, the RAT can't be read although the modem is still in
+		# service, and compute_colors would blank the 5G and signal LEDs on a
+		# single bad poll. So hold the last colours, for at most grace_max_ticks
+		# polls, and only while the modem is provably in service. Searching,
+		# denied and SIM-fail states don't pass that check and keep their own
+		# colour. After the limit the LEDs go blank. A readable RAT resets the
+		# grace and repaints at once.
+		# Only a real 5G colour is worth holding. If the last 5G colour was off
+		# (or a flash), the previous poll saw no service or was searching, so
+		# compute fresh. That also stops a stale red flash being held across a
+		# searching -> registered change, and a hold/blank flip-flop after the
+		# limit is reached. A real 5G colour means the modem was registered, so
+		# the matching signal colour was a registered one too, never a flash.
+		contended=0
+		case "$COLOR_5G" in
+		blue | green)
+			if { [ "$M_RAT" = none ] || [ -z "$M_RAT" ]; } && [ -z "$M_RSRP" ] && cw_modem_serving; then
+				contended=1
+			fi
+			;;
+		esac
+		if [ "$contended" = 1 ] && [ "$grace_max_ticks" -gt 0 ] && [ "$GRACE_TICKS" -lt "$grace_max_ticks" ]; then
+			if [ "$GRACE_TICKS" = 0 ]; then
+				logger -t cw-led "state: contention grace holding 5g=$COLOR_5G signal=$COLOR_SIGNAL (rat=${M_RAT:-?} reg=${M_REG:-?} csq=${M_CSQ:-?} port=$CW_AT_PORT)"
+			fi
+			GRACE_TICKS=$((GRACE_TICKS + 1))
+			# hold: leave the colours alone, modem_update repaints them
+		else
+			prev_sig=$COLOR_SIGNAL
+			if [ "$GRACE_TICKS" -gt 0 ]; then
+				logger -t cw-led "state: contention grace ended after $GRACE_TICKS poll(s) - recomputing (rat=${M_RAT:-?} port=$CW_AT_PORT)"
+				GRACE_TICKS=0
+			fi
+			compute_colors
+			# Signal-metric grace. This poll was registered and the RAT was
+			# readable, but both signal metrics were cut off (the other reader
+			# took the +CSQ/RSRP replies, the QENG serving line got through).
+			# compute_colors then sets the 5G colour from the RAT and turns the
+			# signal LED off for one poll. Hold the previous signal colour
+			# instead (green, blue or red only: a red flash means connecting or
+			# SIM-fail, and off has nothing to hold), for at most
+			# grace_max_ticks polls like the grace above, then blank. This grace
+			# and the one above never apply to the same poll (unreadable RAT vs
+			# readable RAT). They have separate counters, and neither resets
+			# the other.
+			if [ "$M_REG" = 1 ] && [ -n "$M_RAT" ] && [ "$M_RAT" != none ] &&
+				[ -z "$M_RSRP" ] && [ -z "$M_CSQ" ]; then
+				case "$prev_sig" in
+				green | blue | red)
+					if [ "$grace_max_ticks" -gt 0 ] && [ "$SIG_GRACE_TICKS" -lt "$grace_max_ticks" ]; then
+						if [ "$SIG_GRACE_TICKS" = 0 ]; then
+							logger -t cw-led "state: signal-metric grace holding signal=$prev_sig (rat=${M_RAT:-?} rsrp= csq= port=$CW_AT_PORT)"
+						fi
+						SIG_GRACE_TICKS=$((SIG_GRACE_TICKS + 1))
+						COLOR_SIGNAL=$prev_sig
+					elif [ "$SIG_GRACE_TICKS" -gt 0 ]; then
+						logger -t cw-led "state: signal-metric grace cap reached after $SIG_GRACE_TICKS poll(s) - blanking (rat=${M_RAT:-?} port=$CW_AT_PORT)"
+						SIG_GRACE_TICKS=0
+					fi
+					;;
+				esac
+			elif [ "$SIG_GRACE_TICKS" -gt 0 ]; then
+				logger -t cw-led "state: signal-metric grace ended after $SIG_GRACE_TICKS poll(s) - recomputing (rsrp=${M_RSRP:-?} csq=${M_CSQ:-?} port=$CW_AT_PORT)"
+				SIG_GRACE_TICKS=0
+			fi
+		fi
+	else
+		# The port is silent. That is handled by the MODEM_FAILS threshold below,
+		# so drop any grace still running; a real disconnect must not be hidden
+		# by an old hold.
+		GRACE_TICKS=0
+		SIG_GRACE_TICKS=0
+		MODEM_FAILS=$((MODEM_FAILS + 1))
+		# Log the first failed poll of a streak even though the code below keeps
+		# the old colours and returns: a blip that never reaches the threshold
+		# still leaves a timestamped mark with the port. Only the first failure,
+		# so it is one line per blip; a long outage adds "modem unreachable".
+		if [ "$MODEM_FAILS" = 1 ]; then
+			logger -t cw-led "state: modem poll failed on $CW_AT_PORT - transient, holding 5g=$COLOR_5G signal=$COLOR_SIGNAL"
+		fi
+		if [ "$MODEM_FAILS" -lt "$modem_fail_threshold" ]; then
+			return 0 # transient, keep the previous colours
+		fi
+		# Modem unreachable means unknown, not "no service": go off, never red.
+		# The 5G LED has no red, and a solid red on the signal LED means "poor".
+		COLOR_5G=off
+		COLOR_SIGNAL=off
+		if [ "$MODEM_WARNED" != 1 ]; then
+			logger -t cw-led "modem unreachable on $CW_AT_PORT ($MODEM_FAILS consecutive failures)"
+			MODEM_WARNED=1
+		fi
+		# Every so often look for a port that moved (USB re-enumeration). If one
+		# answers, poll again right away so the LEDs repaint within a tick.
+		if [ $((MODEM_FAILS % 10)) -eq 0 ] && cw_modem_probe_port; then
+			FORCE_MODEM_POLL=1
+			logger -t cw-led "AT port responding again on $CW_AT_PORT - re-polling"
+		fi
+	fi
+	# Log a 5G or signal colour change with the modem state and the AT port, so
+	# a short fault (say the port answering AT but QENG saying NOCONN, so
+	# rat=none and the LEDs go off) can still be found in logread afterwards.
+	if [ "$COLOR_5G" != "$PREV_5G" ] || [ "$COLOR_SIGNAL" != "$PREV_SIGNAL" ]; then
+		logger -t cw-led "state: 5g $PREV_5G->$COLOR_5G, signal $PREV_SIGNAL->$COLOR_SIGNAL (rat=${M_RAT:-?} reg=${M_REG:-?} rsrp=${M_RSRP:-?} csq=${M_CSQ:-?} sim=${M_SIM:-?} port=$CW_AT_PORT)"
+		PREV_5G=$COLOR_5G
+		PREV_SIGNAL=$COLOR_SIGNAL
+	fi
+}
+
+# --- internet LED --------------------------------------------------------------------
+
+# Resolve the logical WAN interface and its real L3 device once and remember
+# both. The staleness check watches the L3 device (e.g. wwan0_1, which carries
+# the route and IP), not the logical name (wwan0 is a bare QMI netdev and
+# would never change). Sets INTERNET_IFN (logical name) and RESOLVED_L3.
+internet_resolve_wan() {
+	local ifn=$internet_iface
+	if [ "$ifn" = "auto" ] || [ -z "$ifn" ]; then
+		# auto: follow the default-route WAN, redo it when the L3 device goes away
+		if [ -z "$RESOLVED_WAN" ] || { [ -n "$RESOLVED_L3" ] && [ ! -e "/sys/class/net/$RESOLVED_L3" ]; }; then
+			RESOLVED_WAN=""; RESOLVED_L3=""
+			network_find_wan RESOLVED_WAN
+			[ -n "$RESOLVED_WAN" ] && network_get_device RESOLVED_L3 "$RESOLVED_WAN"
+		fi
+		ifn=$RESOLVED_WAN
+	else
+		# explicit interface: resolve its L3 device too, with the same staleness
+		# check, so a re-dial that swaps the netdev is noticed on the next tick
+		if [ -z "$RESOLVED_L3" ] || [ ! -e "/sys/class/net/$RESOLVED_L3" ]; then
+			RESOLVED_L3=""
+			network_get_device RESOLVED_L3 "$ifn"
+		fi
+	fi
+	INTERNET_IFN=$ifn
+}
+
+# Is the uplink up? The logical WAN interface is up or, before netifd knows it,
+# any default route exists. Cheap enough for every tick. Returns 0 = up.
+internet_passive_up() {
+	network_flush_cache
+	internet_resolve_wan
+	if [ -n "$INTERNET_IFN" ] && [ "$INTERNET_IFN" != "auto" ]; then
+		network_is_up "$INTERNET_IFN"
+		return $?
+	fi
+	# Early boot, before netifd has the interface: any default route counts.
+	# The LED means "the router's uplink reaches the internet", whichever
+	# uplink that is (cellular, ethernet, a second WAN).
+	ip route show default 2>/dev/null | grep -q . && return 0
+	return 1
+}
+
+# Strict 204 probe. Exactly HTTP 204 means the internet is really reachable; a
+# captive portal answers 200 or a redirect. Tries the primary then the
+# fallback URL and stops at the first 204, so a healthy link is one quick
+# request.
+#
+# The probe is deliberately not bound to the WAN device (no curl --interface).
+# A socket bound with SO_BINDTODEVICE skips the nft REDIRECT that a
+# transparent proxy on the router (passwall2 localhost_proxy) applies to
+# router-local TCP, so every probe timed out and the LED stayed off. An
+# unbound probe follows the routing table, which is the path the router really
+# uses; behind such a proxy that is the proxied path.
+#
+# IPv4 only by default: on carrier-NAT cellular the IPv6 attempt just adds
+# latency. internet.probe_ipv6=1 adds it.
+internet_probe204() {
+	local fam fams="-4" url code
+	[ "$internet_probe_ipv6" = 1 ] && fams="-4 -6"
+	# --max-time bounds each attempt, so a full outage stalls the loop for at
+	# most (families x URLs x timeout)
+	for fam in $fams; do
+		for url in "$internet_probe_url" "$internet_probe_url_fb"; do
+			[ -n "$url" ] || continue
+			code=$(curl -s -o /dev/null "$fam" --max-time "$internet_probe_timeout" \
+				-w '%{http_code}' "$url" 2>/dev/null)
+			[ "$code" = "204" ] && return 0
+		done
+	done
+	return 1
+}
+
+internet_update() {
+	local up=0
+	concept_active internet || return 0
+	case "$internet_mode" in
+	ping)
+		[ $((TICK_NO % internet_ping_every)) -eq 0 ] || return 0
+		ping -c 1 -W 2 "$internet_ping_host" >/dev/null 2>&1 && up=1
+		;;
+	http204)
+		# Uplink check first, then the probe. Uplink down: off at once, reset the
+		# counters and probe again when it returns. Uplink up: probe every
+		# probe_every ticks (or right away when PROBE_PENDING). The LED turns on
+		# after probe_up_ok successes and off after probe_down_fail failures, so
+		# one dropped probe doesn't make it flicker.
+		if ! internet_passive_up; then
+			INTERNET_UP=0; PROBE_OK=0; PROBE_FAIL=0; PROBE_PENDING=1
+		elif [ "$PROBE_PENDING" = 1 ] || [ $((TICK_NO % internet_probe_every)) -eq 0 ]; then
+			PROBE_PENDING=0
+			if internet_probe204; then
+				PROBE_OK=$((PROBE_OK + 1)); PROBE_FAIL=0
+				[ "$PROBE_OK" -ge "$internet_probe_up_ok" ] && INTERNET_UP=1
+			else
+				PROBE_FAIL=$((PROBE_FAIL + 1)); PROBE_OK=0
+				[ "$PROBE_FAIL" -ge "$internet_probe_down_fail" ] && INTERNET_UP=0
+			fi
+		fi
+		up=$INTERNET_UP
+		;;
+	*)
+		# interface mode: the uplink check alone decides (link up = LED on)
+		internet_passive_up && up=1
+		;;
+	esac
+	led_set "green:internet" brightness "$up"
+	if [ "$up" != "$PREV_INTERNET" ]; then
+		logger -t cw-led "state: internet $PREV_INTERNET->$up (mode=$internet_mode)"
+		PREV_INTERNET=$up
+	fi
+}
+
+# --- wifi LED (auto mode) ------------------------------------------------------------
+
+wifi_update() {
+	local up=0
+	[ "$wifi_mode" = "netdev" ] && return 0   # the kernel drives it
+	concept_active wifi || return 0
+	cw_wifi_any_up && up=1
+	led_set "green:wifi" brightness "$up"
+}
+
+# --- lifecycle -----------------------------------------------------------------------
+
+# The base `led` service saves a LED's state to /var/run/led.state whenever it
+# loads a `config led` section, and writes the saved state back on its next
+# start. On the first boot after a flash the stock 5G and internet sections
+# still exist when the kernel coldplug runs `led start <sysfs>`
+# (90-cw-led removes them later, at S10), so S96 would write "green:5g none 0"
+# over the colour this daemon painted at S50. So drop the pending entries of the
+# nodes this daemon manages, the same way `led start <sysfs>` consumes one.
+# CW_LED_STATE overrides the file (for tests).
+drop_owned_led_state() {
+	local f="${CW_LED_STATE:-/var/run/led.state}"
+	[ -s "$f" ] || return 0
+	grep -v -E '^((blue|green|red):(5g|signal)|green:(power|wifi|internet)) ' "$f" > "$f.new"
+	mv "$f.new" "$f"
+}
+
+park_owned_leds() {
+	set_tricolor 5g off
+	set_tricolor signal off
+	led_set "green:internet" brightness 0
+}
+
+EXITING=0
+# Runs on EXIT (also catches a shell error) and on INT/TERM. Safe to run twice.
+# SIGKILL and OOM can't be trapped; the startup park_owned_leds in main_loop
+# covers those on the next respawn.
+on_exit() {
+	[ "$EXITING" = 1 ] && return 0
+	EXITING=1
+	trap - EXIT INT TERM
+	cw_at_unlock 2>/dev/null   # drop the AT lock if we were killed mid-query
+	clear_cache
+	apply_static_triggers
+	park_owned_leds            # daemon-owned LEDs off
+	logger -t cw-led "stopped - static triggers restored"
+}
+
+main_loop() {
+	trap 'on_exit' EXIT
+	trap 'on_exit; exit 0' INT TERM
+	warn_missing_nodes
+	drop_owned_led_state
+	apply_static_triggers
+	park_owned_leds   # clear colours left over from a crash; the first poll
+	                  # repaints within one poll_interval (off beats stale)
+	# Don't leave the 5G group dark while the first AT read is running: show
+	# the connecting state (1 Hz red flash) now. If the modem is already
+	# registered, the first tick polls at once and repaints within about one AT
+	# timeout. Stored in COLOR_5G so the per-tick update keeps it.
+	COLOR_5G=red_flash
+	set_tricolor 5g "$COLOR_5G"
+	if [ ! -c "$CW_AT_PORT" ] || ! cw_at_query 'AT' | grep -q '^OK$'; then
+		if cw_modem_probe_port; then
+			logger -t cw-led "AT port: using $CW_AT_PORT (configured port unresponsive)"
+		fi
+	fi
+	while :; do
+		TICK_NO=$((TICK_NO + 1))
+		night_update
+		modem_update
+		internet_update
+		wifi_update
+		# optional status line every log_heartbeat_min minutes (0 = off)
+		if [ "$log_heartbeat_min" -gt 0 ]; then
+			hb_now=$(date +%s)
+			if [ $((hb_now - LAST_HEARTBEAT)) -ge $((log_heartbeat_min * 60)) ]; then
+				LAST_HEARTBEAT=$hb_now
+				logger -t cw-led "heartbeat: 5g=$COLOR_5G signal=$COLOR_SIGNAL internet=$PREV_INTERNET (rat=${M_RAT:-?} reg=${M_REG:-?} rsrp=${M_RSRP:-?} port=$CW_AT_PORT night=$NIGHT_STATE grace=$GRACE_TICKS sig_grace=$SIG_GRACE_TICKS)"
+			fi
+		fi
+		sleep "$global_tick"
+	done
+}
+
+# For tests: `CW_LED_LIB_ONLY=1 . cw-led-daemon` loads the functions above
+# without load_config or the dispatch, so compute_colors, set_tricolor and the
+# led_set cache can be tested outside the poll loop. Never set in normal runs.
+if [ -n "${CW_LED_LIB_ONLY:-}" ]; then
+	return 0 2>/dev/null || exit 0
+fi
+
+load_config
+
+case "${1:-}" in
+restore)
+	apply_static_triggers
+	park_owned_leds
+	exit 0
+	;;
+'')
+	main_loop
+	;;
+*)
+	echo "usage: cw-led-daemon [restore]" >&2
+	exit 2
+	;;
+esac

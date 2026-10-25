@@ -1,0 +1,14 @@
+{
+	"admin/system/cw-led": {
+		"title": "LED Management",
+		"order": 61,
+		"action": {
+			"type": "view",
+			"path": "cw-led/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-cw-led" ],
+			"uci": { "cw-led": true }
+		}
+	}
+}

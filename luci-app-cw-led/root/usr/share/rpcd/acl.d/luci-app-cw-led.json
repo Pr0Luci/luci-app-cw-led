@@ -1,0 +1,14 @@
+{
+	"luci-app-cw-led": {
+		"description": "Grant access to LED management",
+		"read": {
+			"uci": [ "cw-led" ],
+			"ubus": {
+				"luci.cw-led": [ "status", "options" ]
+			}
+		},
+		"write": {
+			"uci": [ "cw-led" ]
+		}
+	}
+}

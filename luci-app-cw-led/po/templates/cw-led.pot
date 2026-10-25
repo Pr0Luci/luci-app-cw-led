@@ -1,0 +1,287 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8"
+
+msgid "5G"
+msgstr ""
+
+msgid "5G SA"
+msgstr ""
+
+msgid "5G NSA"
+msgstr ""
+
+msgid "connecting"
+msgstr ""
+
+msgid "unavailable"
+msgstr ""
+
+msgid "A window past midnight (e.g. 22:30 to 06:00) is supported."
+msgstr ""
+
+msgid "AT port device"
+msgstr ""
+
+msgid "AT response timeout (s)"
+msgstr ""
+
+msgid "Auto - lit when any radio is up"
+msgstr ""
+
+msgid "Automatic (default route)"
+msgstr ""
+
+msgid ""
+"Green: good. Blue: average. Red: poor or no service. Based on RSRP, with CSQ "
+"as fallback."
+msgstr ""
+
+msgid "CSQ excellent threshold"
+msgstr ""
+
+msgid "CSQ poor threshold"
+msgstr ""
+
+msgid "Check mode"
+msgstr ""
+
+msgid "Consecutive failed AT polls before the 5G and signal LEDs are switched off (status unknown)."
+msgstr ""
+
+msgid "Daemon"
+msgstr ""
+
+msgid "Default-route interface is up"
+msgstr ""
+
+msgid ""
+"Drive the AW1000 physical LEDs from live modem and network status, with an "
+"optional night window. Self-contained - modem data is read directly over "
+"the AT port."
+msgstr ""
+
+msgid "Enable LED daemon"
+msgstr ""
+
+msgid "Enable night mode"
+msgstr ""
+
+msgid "Expecting a time in HH:MM (24h) format"
+msgstr ""
+
+msgid "Failure threshold"
+msgstr ""
+
+msgid "Contention grace (polls)"
+msgstr ""
+
+msgid "When a truncated modem reply leaves the network type briefly unreadable but the modem is still connected, hold the last 5G and signal colour for up to this many polls instead of blanking. 0 disables (blank immediately)."
+msgstr ""
+
+msgid "General"
+msgstr ""
+
+msgid "How often the AT port is queried for 5G/signal status."
+msgstr ""
+
+msgid ""
+"Inside the window, LEDs not in the exempt list are switched off. The "
+"hardware cannot dim - LEDs are binary on/off."
+msgstr ""
+
+msgid "Interface"
+msgstr ""
+
+msgid ""
+"Interface whose traffic blinks the LED. Pick one Wi-Fi interface, or a bridge "
+"such as br-lan to follow both radios (a bridge also carries ethernet LAN). "
+"Leave blank for the first Wi-Fi interface found."
+msgstr ""
+
+msgid "Internet"
+msgstr ""
+
+msgid "Internet LED"
+msgstr ""
+
+msgid "Keep on during night"
+msgstr ""
+
+msgid "LED Management"
+msgstr ""
+
+msgid "Logical interface to watch, or \"auto\" to follow the default route."
+msgstr ""
+
+msgid "Modem AT port"
+msgstr ""
+
+msgid "Mode"
+msgstr ""
+
+msgid "Modem poll interval (s)"
+msgstr ""
+
+msgid "Night mode"
+msgstr ""
+
+msgid ""
+"On this device the internet LED reflects the modem data connection (wwan0), "
+"not the ethernet WAN."
+msgstr ""
+
+msgid "Phone"
+msgstr ""
+
+msgid "external"
+msgstr ""
+
+
+msgid "Ping a host"
+msgstr ""
+
+msgid "Ping host"
+msgstr ""
+
+msgid "Active connectivity probe (HTTP 204)"
+msgstr ""
+
+msgid "HTTP 204 actively confirms real reachability (catches \"link up but no internet\"). Interface = link-up only. Ping = ICMP a host."
+msgstr ""
+
+msgid "Probe URL"
+msgstr ""
+
+msgid "Endpoint that returns HTTP 204. Use plain http:// so captive portals are detected."
+msgstr ""
+
+msgid "Fallback probe URL"
+msgstr ""
+
+msgid "Probe interval (ticks)"
+msgstr ""
+
+msgid "Ticks between probes (one tick is the global tick, 5 s by default). Other LEDs still update every tick."
+msgstr ""
+
+msgid "Poor threshold must be lower than the excellent threshold"
+msgstr ""
+
+msgid "Power"
+msgstr ""
+
+msgid ""
+"Quectel AT command port. If unresponsive, other ttyUSB ports are probed "
+"automatically at runtime."
+msgstr ""
+
+msgid "RSRP at or above this shows blue."
+msgstr ""
+
+msgid ""
+"RSRP at or below this shows red. Must be lower than the excellent threshold."
+msgstr ""
+
+msgid "RSRP excellent threshold (dBm)"
+msgstr ""
+
+msgid "RSRP poor threshold (dBm)"
+msgstr ""
+
+msgid "Selected LEDs stay on inside the night window. The Phone LED is not controlled by this app, so night mode does not affect it."
+msgstr ""
+
+msgid "Signal"
+msgstr ""
+
+msgid "Signal LED"
+msgstr ""
+
+msgid "Single interface - blinks on traffic"
+msgstr ""
+
+msgid ""
+"This hardware ignores the kernel radio LED triggers, so \"Auto\" is daemon-"
+"driven."
+msgstr ""
+
+msgid "Used when RSRP is unavailable."
+msgstr ""
+
+msgid "Wi-Fi"
+msgstr ""
+
+msgid "Wi-Fi LED"
+msgstr ""
+
+msgid "Wi-Fi interface"
+msgstr ""
+
+msgid "Window end (HH:MM)"
+msgstr ""
+
+msgid "Window start (HH:MM)"
+msgstr ""
+
+msgid "active"
+msgstr ""
+
+msgid "idle"
+msgstr ""
+
+msgid "traffic"
+msgstr ""
+
+msgid "running"
+msgstr ""
+
+msgid "stopped"
+msgstr ""
+
+msgid "Night window"
+msgstr ""
+
+msgid "Signal scale (dBm)"
+msgstr ""
+
+msgid "Status unavailable"
+msgstr ""
+
+msgid "excellent"
+msgstr ""
+
+msgid "no 5G"
+msgstr ""
+
+msgid "off"
+msgstr ""
+
+msgid "on"
+msgstr ""
+
+msgid "poor"
+msgstr ""
+
+msgid "first interface found"
+msgstr ""
+
+msgid "good"
+msgstr ""
+
+msgid "average"
+msgstr ""
+
+msgid "Live LED status"
+msgstr ""
+
+msgid "between"
+msgstr ""
+
+msgid "Signal scale"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""

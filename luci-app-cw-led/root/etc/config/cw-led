@@ -1,0 +1,61 @@
+
+config cw-led 'global'
+	option enabled '1'
+	option poll_interval '30'
+	option tick '5'
+	# minutes between status lines in logread, 0 = off (state changes are always logged)
+	option log_heartbeat_min '0'
+
+config modem 'modem'
+	# The modem's second AT channel. Other software (qmodem) polls ttyUSB3, and two
+	# readers on one port interleave their replies, so a shared port blanked the
+	# LEDs. If this port does not answer, the daemon tries ttyUSB3/1/0.
+	option port '/dev/ttyUSB2'
+	option timeout '3'
+	option fail_threshold '3'
+	# When a truncated AT+QENG (another reader on the port) makes the RAT
+	# unreadable while the modem is still serving, keep the last 5G/signal colour
+	# for up to N polls instead of blanking. 0 = blank immediately. No-service,
+	# SIM-fail and connecting states are never held.
+	option grace_max_ticks '2'
+
+config night 'night'
+	option enabled '0'
+	option start '22:30'
+	option end '06:00'
+	list exempt 'power'
+	list exempt 'wifi'
+	list exempt 'fiveg'
+	list exempt 'signal'
+	list exempt 'internet'
+
+# Every LED is always managed: power is default-on, 5G and signal are
+# tri-color. The phone LED (green:phone) is left alone, and so is the
+# ethernet WAN port LED (stock kernel block). Only LEDs with settings
+# have a section below.
+
+config led 'wifi'
+	option mode 'auto'          # auto = lit when any radio is up (daemon-driven);
+	                            # netdev = kernel netdev trigger on one iface (traffic blink)
+	option device ''            # netdev mode: wifi iface (e.g. phy0-ap0); empty = first found
+
+config led 'signal'
+	option rsrp_excellent '-95'
+	option rsrp_poor '-110'
+	option csq_excellent '20'
+	option csq_poor '9'
+
+config led 'internet'
+	option mode 'http204'       # http204 = active connectivity probe;
+	                            # interface = link-up only; ping = ICMP a host
+	option iface 'auto'
+	option ping_host '1.1.1.1'
+	option ping_every '6'
+	# http204 mode: strict HTTP 204 reachability probe
+	option probe_url 'http://cp.cloudflare.com/generate_204'
+	option probe_url_fallback 'http://connectivitycheck.gstatic.com/generate_204'
+	option probe_every '6'      # ticks between probes (6 x tick 5s = ~30s)
+	option probe_timeout '3'    # curl --max-time per attempt (s)
+	option probe_ipv6 '0'       # 1 = also try the probe over IPv6 (default IPv4 only)
+	option probe_up_ok '1'      # consecutive OK probes to turn ON
+	option probe_down_fail '2'  # consecutive failed probes to turn OFF
