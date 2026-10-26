@@ -1,5 +1,7 @@
 # luci-app-cw-led
 
+Part of [CleanWRT](https://github.com/Pr0Luci/cleanwrt-aw1000). Documentation: [Front-panel LEDs](https://pr0luci.github.io/cleanwrt-aw1000/docs/leds/).
+
 LED management for the Arcadyan AW1000 5G router on OpenWrt 25.12. A small shell daemon drives the
 front-panel LEDs from live modem and network state, and a LuCI page (System > LED Management) shows
 the current state and edits the settings.
