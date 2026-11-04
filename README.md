@@ -46,8 +46,10 @@ logread -e cw-led
 
 ## Theme
 
-The card layout and the toggle switches are styled for the Apex theme. Other themes get the stock form,
-and the live status card works in any theme.
+The form is LuCI's own: nothing here restyles it for one theme, because that leaves a mismatched island
+in every other one. The live status card is drawn by this page and takes its surface from the active
+theme - the panel is the framework's `cbi-section`, and the boxes inside it take their corner radius from
+the theme's own radius tiers - so the rounding and dark/light settings reach the whole page.
 
 ## Licence
 
