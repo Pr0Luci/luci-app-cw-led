@@ -44,14 +44,22 @@ function isApexTheme() {
  * set per colour scheme below, so lamps, labels and the scale follow the theme. */
 var LED_KEYS = [ 'blue', 'green', 'red' ];
 
-/* Namespaced styles, injected once. They use the Apex theme's --ax-* variables
- * with neutral fallbacks, so the page still looks fine in other themes. */
+/* Namespaced styles, injected once. A panel here is the framework's own panel: the
+ * status strip carries `cbi-section`, so the theme paints its background, hairline
+ * and corner radius and the page only sets its layout; the settings card below is
+ * a `cbi-section` already and is left to paint itself.
+ *
+ * The tiles and the two chips are boxes *inside* a panel, and the theme deliberately
+ * flattens a section nested in a section (`.cbi-section .cbi-section`), which would
+ * take their outline away, so those keep the fill the page has always given them and
+ * take only the radius from the theme's own control tier (`--o`, five sixths of the
+ * panel radius). The rounding setting therefore reaches every corner on this page. */
 var CW_CSS = [
 	/* ---- tokens ---- */
-	'.cw-led-page{--cl-card:var(--ax-card,Canvas);--cl-sub:var(--ax-bg,rgba(128,128,128,.1));--cl-hair:var(--ax-border,rgba(128,128,128,.32));',
+	'.cw-led-page{--cl-sub:var(--ax-bg,rgba(128,128,128,.1));--cl-hair:var(--ax-border,rgba(128,128,128,.32));',
 	'--cl-field:var(--ax-track,rgba(128,128,128,.75));--cl-trk:var(--ax-input-bg,Canvas);--cl-fg:var(--ax-fg,CanvasText);--cl-muted:var(--ax-muted,rgba(128,128,128,1));',
 	'--cl-ink:var(--ax-accent-text,#0f766e);--cl-acc:var(--ax-accent,#14b8a6);--cl-accink:#0b1f1d;--cl-tint:var(--ax-accent-dim,rgba(20,184,166,.14));',
-	'--cl-mono:var(--ax-mono,ui-monospace,monospace);--cl-r:var(--ax-r,3px);--cl-h:40px;',
+	'--cl-mono:var(--ax-mono,ui-monospace,monospace);--cl-h:40px;',
 	'--cl-g:#34d399;--cl-b:#60a5fa;--cl-r2:#f87171;--cl-am:#fbbf24;--cl-w:#e6eaee;--cl-off:#0e1114;display:flex;flex-direction:column;gap:16px;color:var(--cl-fg)}',
 	'@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .cw-led-page{--cl-g:#2e8b57;--cl-b:#2563c9;--cl-r2:#b91c1c;--cl-am:#b7791f;--cl-w:#fff;--cl-off:#f3f4f6}}',
 	':root[data-theme="light"] .cw-led-page{--cl-g:#2e8b57;--cl-b:#2563c9;--cl-r2:#b91c1c;--cl-am:#b7791f;--cl-w:#fff;--cl-off:#f3f4f6}',
@@ -59,13 +67,13 @@ var CW_CSS = [
 	'.cw-c-green{--c:var(--cl-g)}.cw-c-blue{--c:var(--cl-b)}.cw-c-red{--c:var(--cl-r2)}.cw-c-amber{--c:var(--cl-am)}.cw-c-white{--c:var(--cl-w)}',
 
 	/* ---- live status card ---- */
-	'.cw-live{background:var(--cl-card);border:1px solid var(--cl-hair);border-radius:var(--cl-r);padding:14px 16px 16px;display:flex;flex-direction:column;gap:14px}',
+	'.cw-live{margin:0;padding:14px 16px 16px;display:flex;flex-direction:column;gap:14px}',
 	'.cw-chips{display:flex;gap:8px;flex-wrap:wrap}',
-	'.cw-chip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--cl-r);padding:5px 10px;font:500 12px var(--cl-mono)}',
+	'.cw-chip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--o,10px);padding:5px 10px;font:500 12px var(--cl-mono)}',
 	'.cw-chip i{width:8px;height:8px;border-radius:50%;background:var(--c,var(--cl-g))}.cw-chip.idle i{background:transparent;border:1.5px solid var(--cl-field)}',
 	'.cw-leds{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}',
 	'@media (max-width:700px){.cw-leds{grid-template-columns:repeat(3,minmax(0,1fr))}}',
-	'.cw-led{display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--cl-sub);border:1px solid var(--cl-hair);border-radius:var(--cl-r);padding:14px 6px 10px;text-align:center}',
+	'.cw-led{display:flex;flex-direction:column;align-items:center;gap:6px;margin:0;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--o,10px);padding:14px 6px 10px;text-align:center}',
 	'.cw-lamp{width:38px;height:16px;border-radius:4px;background:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent)}',
 	'.cw-led.cw-c-white .cw-lamp{border:1px solid var(--cl-field)}',
 	'.cw-led.off .cw-lamp{background:var(--cl-off);border:1px solid var(--cl-field);box-shadow:none}',
@@ -82,7 +90,7 @@ var CW_CSS = [
 	'.cw-led-map>.cbi-map-descr{max-width:760px;margin:0 0 16px;padding:0 2px;font-size:14px;line-height:1.55;color:var(--cl-muted)}',
 
 	/* ---- cards ---- */
-	'.cw-led-map .cbi-section{margin:0 0 16px;padding:20px 20px 22px;background:var(--cl-card);border:1px solid var(--cl-hair);border-radius:var(--cl-r);overflow:visible}',
+	'.cw-led-map .cbi-section{margin:0 0 16px;padding:20px 20px 22px;overflow:visible}',
 	'.cw-led-map .cbi-section>h3:first-child{margin:0 0 6px;padding:0;font:600 18px/1.3 var(--ax-font,inherit);letter-spacing:-.01em;color:var(--cl-fg)}',
 	'.cw-led-map .cbi-section>.cbi-section-descr{max-width:780px;margin:0 0 4px;font-size:14px;line-height:1.5;color:var(--cl-muted)}',
 	'.cw-led-map .cbi-section>h3:first-child:not(:has(+.cbi-section-descr)){margin-bottom:16px}',
@@ -109,7 +117,7 @@ var CW_CSS = [
 	'.cw-led-map .cbi-dropdown>ul>li[selected]{background:var(--cl-tint);color:var(--cl-ink)}',
 	'.cw-led-map .cbi-range-slider{display:flex;align-items:center;gap:14px;max-width:420px}',
 	'.cw-led-map .cbi-range-slider input[type="range"]{flex:1;min-width:0;height:var(--cl-h)}',
-	'.cw-led-map .cbi-range-slider output{min-width:46px;padding:4px 10px;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--cl-r);font:600 14px var(--cl-mono);text-align:center;color:var(--cl-ink)}',
+	'.cw-led-map .cbi-range-slider output{min-width:46px;padding:4px 10px;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--o,10px);font:600 14px var(--cl-mono);text-align:center;color:var(--cl-ink)}',
 
 	/* ---- toggle switch (native checkbox, restyled) ---- */
 	'.cw-led-map .cbi-checkbox{display:flex;align-items:center;gap:12px;min-height:var(--cl-h)}',
@@ -189,7 +197,7 @@ function triLamp(color, name, words) {
 }
 
 function renderStatus(st) {
-	var box = E('section', { 'id': 'cw-led-status', 'class': 'cw-live', 'aria-label': _('Live LED status') });
+	var box = E('section', { 'id': 'cw-led-status', 'class': 'cw-live cbi-section', 'aria-label': _('Live LED status') });
 	try {
 		var leds = (st && st.leds) || {};
 		var dRun = !!(st && st.daemon_running);
