@@ -9,11 +9,12 @@
  * SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 Pr0Luci
  *
- * LED management page for the AW1000: a live status card plus one card per
- * form section, toggle switches, a value chip on the slider and a signal scale.
- * The extras are null-safe and wrapped in try/catch so they can't break
- * m.render(). The form.Map logic and the .cbi-* DOM are left alone; the styling
- * only hooks onto .cw-led-page and .cw-led-map.
+ * LED management page for the AW1000: a live status card, then the stock form,
+ * then the signal scale. The status card is built here; the form is left to
+ * LuCI and to whatever theme is active, because a page that restyles a form for
+ * one theme shows a mismatched island in every other one. The card's own boxes
+ * take their surface from the theme as well (see CW_CSS below). The extras are
+ * null-safe and wrapped in try/catch so they can't break m.render().
  */
 var callStatus = rpc.declare({
 	object: 'luci.cw-led',
@@ -31,27 +32,26 @@ function addChoices(o, list) {
 	(list || []).forEach(function(v) { o.value(v); });
 }
 
-/* The card layout and the toggle switches are made for the Apex theme; other
- * themes keep the stock CBI form (the live status card works in any theme).
- * The theme name comes from L.env.media, set by the luci-base header template. */
-function isApexTheme() {
-	var media = String(L.env.media || '').replace(/\/+$/, '');
-
-	return media.slice(media.lastIndexOf('/') + 1) === 'apex';
-}
-
 /* LED colour keys. The colours are CSS custom properties (--cl-g/b/r/am/w),
  * set per colour scheme below, so lamps, labels and the scale follow the theme. */
 var LED_KEYS = [ 'blue', 'green', 'red' ];
 
-/* Namespaced styles, injected once. They use the Apex theme's --ax-* variables
- * with neutral fallbacks, so the page still looks fine in other themes. */
+/* Namespaced styles, injected once. A panel here is the framework's own panel: the
+ * status strip carries `cbi-section`, so the theme paints its background, hairline
+ * and corner radius and the page only sets its layout; the settings card below is
+ * a `cbi-section` already and is left to paint itself.
+ *
+ * The tiles and the two chips are boxes *inside* a panel, and the theme deliberately
+ * flattens a section nested in a section (`.cbi-section .cbi-section`), which would
+ * take their outline away, so those keep the fill the page has always given them and
+ * take only the radius from the theme's own control tier (`--o`, five sixths of the
+ * panel radius). The rounding setting therefore reaches every corner on this page. */
 var CW_CSS = [
 	/* ---- tokens ---- */
-	'.cw-led-page{--cl-card:var(--ax-card,Canvas);--cl-sub:var(--ax-bg,rgba(128,128,128,.1));--cl-hair:var(--ax-border,rgba(128,128,128,.32));',
+	'.cw-led-page{--cl-sub:var(--ax-bg,rgba(128,128,128,.1));--cl-hair:var(--ax-border,rgba(128,128,128,.32));',
 	'--cl-field:var(--ax-track,rgba(128,128,128,.75));--cl-trk:var(--ax-input-bg,Canvas);--cl-fg:var(--ax-fg,CanvasText);--cl-muted:var(--ax-muted,rgba(128,128,128,1));',
 	'--cl-ink:var(--ax-accent-text,#0f766e);--cl-acc:var(--ax-accent,#14b8a6);--cl-accink:#0b1f1d;--cl-tint:var(--ax-accent-dim,rgba(20,184,166,.14));',
-	'--cl-mono:var(--ax-mono,ui-monospace,monospace);--cl-r:var(--ax-r,3px);--cl-h:40px;',
+	'--cl-mono:var(--ax-mono,ui-monospace,monospace);--cl-h:40px;',
 	'--cl-g:#34d399;--cl-b:#60a5fa;--cl-r2:#f87171;--cl-am:#fbbf24;--cl-w:#e6eaee;--cl-off:#0e1114;display:flex;flex-direction:column;gap:16px;color:var(--cl-fg)}',
 	'@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .cw-led-page{--cl-g:#2e8b57;--cl-b:#2563c9;--cl-r2:#b91c1c;--cl-am:#b7791f;--cl-w:#fff;--cl-off:#f3f4f6}}',
 	':root[data-theme="light"] .cw-led-page{--cl-g:#2e8b57;--cl-b:#2563c9;--cl-r2:#b91c1c;--cl-am:#b7791f;--cl-w:#fff;--cl-off:#f3f4f6}',
@@ -59,13 +59,13 @@ var CW_CSS = [
 	'.cw-c-green{--c:var(--cl-g)}.cw-c-blue{--c:var(--cl-b)}.cw-c-red{--c:var(--cl-r2)}.cw-c-amber{--c:var(--cl-am)}.cw-c-white{--c:var(--cl-w)}',
 
 	/* ---- live status card ---- */
-	'.cw-live{background:var(--cl-card);border:1px solid var(--cl-hair);border-radius:var(--cl-r);padding:14px 16px 16px;display:flex;flex-direction:column;gap:14px}',
+	'.cw-live{margin:0;padding:14px 16px 16px;display:flex;flex-direction:column;gap:14px}',
 	'.cw-chips{display:flex;gap:8px;flex-wrap:wrap}',
-	'.cw-chip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--cl-r);padding:5px 10px;font:500 12px var(--cl-mono)}',
+	'.cw-chip{display:inline-flex;gap:8px;align-items:center;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--o,10px);padding:5px 10px;font:500 12px var(--cl-mono)}',
 	'.cw-chip i{width:8px;height:8px;border-radius:50%;background:var(--c,var(--cl-g))}.cw-chip.idle i{background:transparent;border:1.5px solid var(--cl-field)}',
 	'.cw-leds{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}',
 	'@media (max-width:700px){.cw-leds{grid-template-columns:repeat(3,minmax(0,1fr))}}',
-	'.cw-led{display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--cl-sub);border:1px solid var(--cl-hair);border-radius:var(--cl-r);padding:14px 6px 10px;text-align:center}',
+	'.cw-led{display:flex;flex-direction:column;align-items:center;gap:6px;margin:0;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--o,10px);padding:14px 6px 10px;text-align:center}',
 	'.cw-lamp{width:38px;height:16px;border-radius:4px;background:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent)}',
 	'.cw-led.cw-c-white .cw-lamp{border:1px solid var(--cl-field)}',
 	'.cw-led.off .cw-lamp{background:var(--cl-off);border:1px solid var(--cl-field);box-shadow:none}',
@@ -76,49 +76,6 @@ var CW_CSS = [
 	'.cw-flash{animation:cw-blink 1s ease-in-out infinite}',
 	'@keyframes cw-blink{0%,100%{opacity:1}50%{opacity:.18}}',
 	'@media (prefers-reduced-motion:reduce){.cw-flash{animation:none}}',
-
-	/* ---- page header ---- */
-	'.cw-led-map>h2{margin:0 0 6px;padding:0 2px;border:0;font:600 24px/1.2 var(--ax-font,inherit);letter-spacing:-.015em}',
-	'.cw-led-map>.cbi-map-descr{max-width:760px;margin:0 0 16px;padding:0 2px;font-size:14px;line-height:1.55;color:var(--cl-muted)}',
-
-	/* ---- cards ---- */
-	'.cw-led-map .cbi-section{margin:0 0 16px;padding:20px 20px 22px;background:var(--cl-card);border:1px solid var(--cl-hair);border-radius:var(--cl-r);overflow:visible}',
-	'.cw-led-map .cbi-section>h3:first-child{margin:0 0 6px;padding:0;font:600 18px/1.3 var(--ax-font,inherit);letter-spacing:-.01em;color:var(--cl-fg)}',
-	'.cw-led-map .cbi-section>.cbi-section-descr{max-width:780px;margin:0 0 4px;font-size:14px;line-height:1.5;color:var(--cl-muted)}',
-	'.cw-led-map .cbi-section>h3:first-child:not(:has(+.cbi-section-descr)){margin-bottom:16px}',
-	'.cw-led-map .cbi-section-node{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 24px;margin-top:12px;padding-top:18px;border-top:1px solid var(--cl-hair)}',
-	'@media (max-width:700px){.cw-led-map .cbi-section{padding:16px 14px 18px}.cw-led-map .cbi-section-node{grid-template-columns:minmax(0,1fr)}}',
-
-	/* ---- field rows: label above control, help below ---- */
-	'.cw-led-map .cbi-section-node>.cbi-value{display:flex;flex-direction:column;align-items:stretch;gap:8px;min-width:0;margin:0;padding:0;border:0}',
-	'.cw-led-map .cbi-value-title{flex:none;padding:0;font:600 14px/1.3 var(--ax-font,inherit);letter-spacing:0;text-transform:none;color:var(--cl-fg)}',
-	'.cw-led-map .cbi-value-field{width:100%;min-width:0;padding:0}',
-	'.cw-led-map .cbi-value-description{max-width:760px;margin:0;font-size:13px;line-height:1.5;color:var(--cl-muted)}',
-	/* wide rows (long help or wide control) span both columns */
-	'.cw-led-map #cbi-cw-led-modem-port,.cw-led-map #cbi-cw-led-modem-grace_max_ticks,.cw-led-map #cbi-cw-led-night-_timeline,.cw-led-map #cbi-cw-led-night-exempt,',
-	'.cw-led-map #cbi-cw-led-night-enabled,.cw-led-map #cbi-cw-led-signal-_scale,.cw-led-map #cbi-cw-led-internet-mode,.cw-led-map #cbi-cw-led-internet-iface{grid-column:1/-1}',
-
-	/* ---- controls ---- */
-	/* the widgets sit in a wrapper div (input/select are grandchildren of the field); .cbi-dropdown's own inputs are deeper and untouched */
-	'.cw-led-map .cbi-value-field>div>input[type="text"],.cw-led-map .cbi-value-field>div>input[type="number"],.cw-led-map .cbi-value-field>div>select,',
-	'.cw-led-map .cbi-value-field>input[type="text"],.cw-led-map .cbi-value-field>input[type="number"],.cw-led-map .cbi-value-field>select{box-sizing:border-box;width:100%;max-width:420px;height:var(--cl-h);padding:0 12px;border:1px solid var(--cl-field);background-color:var(--cl-trk);font:400 14px var(--cl-mono)}',
-	'.cw-led-map #cbi-cw-led-internet-probe_url .cbi-value-field input,.cw-led-map #cbi-cw-led-internet-probe_url_fallback .cbi-value-field input{max-width:none}',
-	'@media (max-width:700px){.cw-led-map .cbi-value-field>div>input[type="text"],.cw-led-map .cbi-value-field>div>input[type="number"],.cw-led-map .cbi-value-field>div>select,.cw-led-map .cbi-value-field>input[type="text"],.cw-led-map .cbi-value-field>input[type="number"],.cw-led-map .cbi-value-field>select{max-width:none;font-size:16px}}',
-	'.cw-led-map .cbi-value-field .cbi-dropdown{box-sizing:border-box;width:100%;max-width:420px;min-height:var(--cl-h);border:1px solid var(--cl-field);background-color:var(--cl-trk)}',
-	'.cw-led-map #cbi-cw-led-modem-port .cbi-dropdown,.cw-led-map #cbi-cw-led-internet-mode .cbi-dropdown,.cw-led-map #cbi-cw-led-internet-iface .cbi-dropdown,.cw-led-map #cbi-cw-led-internet-mode select{max-width:560px}',
-	'.cw-led-map .cbi-dropdown>ul>li[selected]{background:var(--cl-tint);color:var(--cl-ink)}',
-	'.cw-led-map .cbi-range-slider{display:flex;align-items:center;gap:14px;max-width:420px}',
-	'.cw-led-map .cbi-range-slider input[type="range"]{flex:1;min-width:0;height:var(--cl-h)}',
-	'.cw-led-map .cbi-range-slider output{min-width:46px;padding:4px 10px;border:1px solid var(--cl-hair);background:var(--cl-sub);border-radius:var(--cl-r);font:600 14px var(--cl-mono);text-align:center;color:var(--cl-ink)}',
-
-	/* ---- toggle switch (native checkbox, restyled) ---- */
-	'.cw-led-map .cbi-checkbox{display:flex;align-items:center;gap:12px;min-height:var(--cl-h)}',
-	'.cw-led-map .cbi-checkbox>input[type="checkbox"]{appearance:none;-webkit-appearance:none;flex:none;box-sizing:border-box;width:44px;height:24px;margin:0;cursor:pointer;border:1px solid var(--cl-field);border-radius:0;',
-	'background:linear-gradient(var(--cl-field),var(--cl-field)) 3px 50%/16px 16px no-repeat,var(--cl-trk);transition:background-position .15s}',
-	'.cw-led-map .cbi-checkbox>input[type="checkbox"]:checked{border-color:var(--cl-ink);background:linear-gradient(var(--cl-accink),var(--cl-accink)) 23px 50%/16px 16px no-repeat,var(--cl-acc)}',
-	'.cw-led-map .cbi-checkbox>input[type="checkbox"]:disabled{opacity:.5;cursor:not-allowed}',
-	'.cw-led-map .cbi-checkbox>label{font:500 14px var(--ax-font,inherit);cursor:pointer;color:var(--cl-fg)}',
-	'@media (prefers-reduced-motion:reduce){.cw-led-map .cbi-checkbox>input[type="checkbox"]{transition:none}}',
 
 	/* ---- night window + signal scale ---- */
 	'.cw-bar{display:flex;height:16px;border:1px solid var(--cl-field);background:var(--cl-trk)}',
@@ -189,7 +146,7 @@ function triLamp(color, name, words) {
 }
 
 function renderStatus(st) {
-	var box = E('section', { 'id': 'cw-led-status', 'class': 'cw-live', 'aria-label': _('Live LED status') });
+	var box = E('section', { 'id': 'cw-led-status', 'class': 'cw-live cbi-section', 'aria-label': _('Live LED status') });
 	try {
 		var leds = (st && st.leds) || {};
 		var dRun = !!(st && st.daemon_running);
@@ -296,31 +253,6 @@ function buildScale(exc, poor) {
 	}
 }
 
-/* Checkbox shown as a toggle switch. The native <input type="checkbox"> stays
- * (keyboard, forms, validation) and is restyled in CSS; the empty <label> gets
- * the state text. */
-var SwitchFlag = form.Flag.extend({
-	renderWidget: function(/* ... */) {
-		var el = this.super('renderWidget', arguments);
-
-		try {
-			var cb = el.querySelector('input[type="checkbox"]'),
-			    lb = el.querySelector('label');
-
-			if (cb && lb) {
-				var sync = function() { lb.textContent = cb.checked ? _('Enabled') : _('Disabled'); };
-
-				cb.setAttribute('role', 'switch');
-				cb.addEventListener('change', sync);
-				sync();
-			}
-		}
-		catch (e) { /* the plain checkbox still works */ }
-
-		return el;
-	}
-});
-
 return view.extend({
 	load: function() {
 		return Promise.all([
@@ -353,7 +285,7 @@ return view.extend({
 		/* --- general ----------------------------------------------------- */
 		s = m.section(form.NamedSection, 'global', 'cw-led', _('General'));
 
-		o = s.option(isApexTheme() ? SwitchFlag : form.Flag, 'enabled', _('Enable LED daemon'));
+		o = s.option(form.Flag, 'enabled', _('Enable LED daemon'));
 		o.rmempty = false;
 		o.default = '1';
 
@@ -390,7 +322,7 @@ return view.extend({
 		s = m.section(form.NamedSection, 'night', 'night', _('Night mode'),
 			_('Inside the window, LEDs not in the exempt list are switched off. The hardware cannot dim - LEDs are binary on/off.'));
 
-		o = s.option(isApexTheme() ? SwitchFlag : form.Flag, 'enabled', _('Enable night mode'));
+		o = s.option(form.Flag, 'enabled', _('Enable night mode'));
 		o.rmempty = false;
 
 		function validateTime(section_id, value) {
@@ -535,9 +467,6 @@ return view.extend({
 		o.depends('mode', 'http204');
 
 		return m.render().then(function(mapEl) {
-			if (isApexTheme())
-				mapEl.classList.add('cw-led-map');
-
 			return E('div', { 'class': 'cw-led-page' }, [ statusBox, mapEl ]);
 		});
 	}
